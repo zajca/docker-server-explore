@@ -1,0 +1,227 @@
+version: "3.4"
+
+volumes:
+  prometheus_data: {}
+  grafana_data: {}
+
+networks:
+  monitoring-net:
+  traefik-public:
+    external:
+      name: traefik-public
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - $PWD/config/monitoring/prometheus/:/etc/prometheus/
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--storage.tsdb.retention=14d"
+      - "--web.enable-lifecycle"
+    expose:
+      - 9090
+    labels:
+      org.label-schema.group: "monitoring"
+    links:
+      - cadvisor:cadvisor
+      - alertmanager:alertmanager
+    depends_on:
+      - cadvisor
+    networks:
+      - monitoring-net
+      - traefik-public
+    restart: ${RESTART_MODE}
+    labels:
+      - traefik.frontend.rule=Host:prometheus.${DOMAIN}
+      - traefik.enable=true
+      - traefik.port=9090
+      - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
+      - traefik.docker.network=traefik-public
+      # - traefik.frontend.auth.basic.users=${ADMIN_USER}:${HASHED_PASSWORD}
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 2048M
+        reservations:
+          memory: 128M
+
+  unsee:
+    image: cloudflare/unsee:v0.8.0
+    networks:
+      - net
+    environment:
+      - "ALERTMANAGER_URIS=default:http://alertmanager:9093"
+    deploy:
+      mode: replicated
+      replicas: 1
+      labels:
+        - traefik.frontend.rule=Host:unsee.${DOMAIN}
+        - traefik.enable=true
+        - traefik.port=8080
+        - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
+        - traefik.docker.network=traefik-public
+        # - traefik.frontend.auth.basic.users=${ADMIN_USER}:${HASHED_PASSWORD}
+    networks:
+      - monitoring-net
+      - traefik-public
+
+  nodeexporter:
+    image: prom/node-exporter:latest
+    container_name: nodeexporter
+    user: root
+    privileged: true
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)"
+    restart: ${RESTART_MODE}
+    networks:
+      - monitoring-net
+    labels:
+      org.label-schema.group: "monitoring"
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    expose:
+      - 9093
+    volumes:
+      - $PWD/config/monitoring/alertmanager/:/etc/alertmanager/
+    command:
+      - "--config.file=/etc/alertmanager/config.yml"
+      - "--storage.path=/alertmanager"
+    restart: ${RESTART_MODE}
+    networks:
+      - monitoring-net
+      - traefik-public
+    labels:
+      - traefik.frontend.rule=Host:alertmanager.${DOMAIN}
+      - traefik.enable=true
+      - traefik.port=9093
+      - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
+      - traefik.docker.network=traefik-public
+      # - traefik.frontend.auth.basic.users=${ADMIN_USER}:${HASHED_PASSWORD}
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+
+  cadvisor:
+    image: google/cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /cgroup:/cgroup:ro #doesn't work on MacOS only for Linux
+    networks:
+      - monitoring-net
+    restart: ${RESTART_MODE}
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - $PWD/config/monitoring/grafana/provisioning/:/etc/grafana/provisioning/
+    environment:
+      - GF_SECURITY_ADMIN_USER=${ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_EXPLORE_ENABLED=true
+      - GF_SERVER_ROOT_URL=http://grafana.${DOMAIN}
+      #- GF_SMTP_ENABLED=${GF_SMTP_ENABLED:-false}
+      #- GF_SMTP_FROM_ADDRESS=${GF_SMTP_FROM_ADDRESS:-grafana@test.com}
+      #- GF_SMTP_FROM_NAME=${GF_SMTP_FROM_NAME:-Grafana}
+      #- GF_SMTP_HOST=${GF_SMTP_HOST:-smtp:25}
+      #- GF_SMTP_USER=${GF_SMTP_USER}
+      #- GF_SMTP_PASSWORD=${GF_SMTP_PASSWORD}
+    labels:
+      - traefik.frontend.rule=Host:grafana.${DOMAIN}
+      - traefik.enable=true
+      - traefik.port=3000
+      # - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
+      - traefik.docker.network=traefik-public
+    networks:
+      - monitoring-net
+      - traefik-public
+    restart: always
+    labels:
+      org.label-schema.group: "monitoring"
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+
+  loki:
+    image: grafana/loki:master
+    container_name: loki
+    volumes:
+      - $PWD/config/monitoring/loki/loki-local-config.yaml:/etc/loki/loki-local-config.yaml
+    restart: ${RESTART_MODE}
+    expose:
+      - 3100
+    command: "-config.file=/etc/loki/loki-local-config.yaml"
+    networks:
+      - monitoring-net
+    labels:
+      org.label-schema.group: "monitoring"
+
+  promtail:
+    container_name: promtail
+    image: grafana/promtail:master
+    volumes:
+      - $PWD/config/monitoring/loki/promtail-docker-config.yaml:/etc/promtail/promtail-docker-config.yaml
+      - /var/log:/var/log
+    command: "-config.file=/etc/promtail/promtail-docker-config.yaml"
+    networks:
+      - monitoring-net
+    labels:
+      org.label-schema.group: "monitoring"

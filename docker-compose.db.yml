@@ -1,0 +1,51 @@
+version: '3.4'
+
+networks:
+  monitoring-net:
+      external:
+        name: monitoring-net
+  db-net:
+
+services:
+  sql:
+    image: postgres:11-alpine
+    container_name: sql
+    restart: always
+    environment:
+      POSTGRES_DB: postfix
+      POSTGRES_USER: postfix
+      POSTGRES_PASSWORD: ${DATABASE_USER_PASSWORD}
+    expose:
+      - 5432
+    volumes:
+      - ${VOLUMES_ROOT_PATH}/db/postgres/db:/var/lib/postgresql/data
+      - ./config/db/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    restart: ${RESTART_MODE}
+    healthcheck:
+      test: ["CMD-SHELL", "psql -h 'localhost' -U 'postfix' -c '\\l'"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    networks:
+      - db-net
+
+  sql_exported:
+    image: wrouesnel/postgres_exporter
+    environment:
+      PG_EXPORTER_WEB_LISTEN_ADDRESS: 9187
+      DATA_SOURCE_URI: sql
+      DATA_SOURCE_USER: postfix
+      DATA_SOURCE_PASS: ${DATABASE_USER_PASSWORD}
+    networks:
+      - db-net
+      - monitoring-net
+
+  redis:
+    image: redis:5-alpine
+    container_name: redis
+    restart: ${RESTART_MODE}
+    command: redis-server --appendonly yes
+    volumes:
+      - ${VOLUMES_ROOT_PATH}/db/redis/db:/data
+    networks:
+      - db-net

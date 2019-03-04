@@ -1,0 +1,103 @@
+version: "3.4"
+
+services:
+  mailserver:
+    image: hardware/mailserver:${MAILSERVER_DOCKER_TAG}
+    container_name: mailserver
+    restart: ${RESTART_MODE}
+    domainname: ${MAILSERVER_DOMAIN} # Mail server A/MX/FQDN & reverse PTR = mail.domain.tld.
+    hostname: ${MAILSERVER_HOSTNAME}
+    labels:
+      - traefik.enable=true
+      - traefik.frontend.rule=Host:spam.${MAILSERVER_DOMAIN}
+      - traefik.port=11334
+      - traefik.docker.network=traefik-public
+    # extra_hosts:                          - Required for external database (on other server or for local databases on host without docker)
+    #  - "mariadb:xx.xx.xx.xx"              - Replace with IP address of MariaDB server
+    #  - "redis:xx.xx.xx.xx"                - Replace with IP address of Redis server
+    ports:
+      - "25:25" # SMTP                - Required
+      # - "110:110"     # POP3       STARTTLS - Optional - For webmails/desktop clients
+      # - "143:143"     # IMAP       STARTTLS - Optional - For webmails/desktop clients
+      # - "465:465"     # SMTPS      SSL/TLS  - Optional - Enabled for compatibility reason, otherwise disabled
+      - "587:587" # Submission STARTTLS - Optional - For webmails/desktop clients
+      - "993:993" # IMAPS      SSL/TLS  - Optional - For webmails/desktop clients
+      # - "995:995"     # POP3S      SSL/TLS  - Optional - For webmails/desktop clients
+      - "4190:4190" # SIEVE      STARTTLS - Optional - Recommended for mail filtering
+    environment:
+      - DBDRIVER=pgsql
+      - DBHOST=sql
+      - DBPORT=5432
+      - DBPASS=${DATABASE_USER_PASSWORD} # MariaDB database password (required)
+      - RSPAMD_PASSWORD=${RSPAMD_PASSWORD} # Rspamd WebUI password (required)
+      # - ADD_DOMAINS=aa.tld, www.bb.tld...      # Add additional domains separated by commas (needed for dkim keys etc.)
+      - DEBUG_MODE=true # Enable Postfix, Dovecot, Rspamd and Unbound verbose logging
+    # - ENABLE_POP3=true                       # Enable POP3 protocol
+    # - ENABLE_FETCHMAIL=true                  # Enable fetchmail forwarding
+    # - DISABLE_RATELIMITING=false             # Enable ratelimiting policy
+    # - DISABLE_CLAMAV=true                    # Disable virus scanning
+    # - DISABLE_SIGNING=true                   # Disable DKIM/ARC signing
+    # - DISABLE_GREYLISTING=true               # Disable greylisting policy
+    #
+    # Full list : https://github.com/hardware/mailserver#environment-variables
+    #
+    volumes:
+      - ${VOLUMES_ROOT_PATH}/mail/mail:/var/mail
+    depends_on:
+      - sql
+      - redis
+    networks:
+      - db-net
+      - mail-net
+      - traefik-public
+
+  # Administration interface
+  # https://github.com/hardware/postfixadmin
+  # http://postfixadmin.sourceforge.net/
+  # Configuration : https://github.com/hardware/mailserver/wiki/Postfixadmin-initial-configuration
+  postfixadmin:
+    image: hardware/postfixadmin
+    container_name: postfixadmin
+    restart: ${RESTART_MODE}
+    domainname: ${MAILSERVER_DOMAIN}
+    hostname: ${MAILSERVER_HOSTNAME}
+    labels:
+      - traefik.enable=true
+      - traefik.frontend.rule=Host:postfixadmin.${MAILSERVER_DOMAIN}
+      - traefik.port=8888
+      - traefik.docker.network=traefik-public
+    environment:
+      - DBPASS=${DATABASE_USER_PASSWORD}
+      - DBDRIVER=pgsql
+      - DBHOST=sql
+      - DBPORT=5432
+    depends_on:
+      - mailserver
+      - sql
+    networks:
+      - db-net
+      - mail-net
+      - traefik-public
+
+  # Webmail (Optional)
+  # https://github.com/hardware/rainloop
+  # https://www.rainloop.net/
+  # Configuration : https://github.com/hardware/mailserver/wiki/Rainloop-initial-configuration
+  rainloop:
+    image: hardware/rainloop
+    container_name: rainloop
+    restart: ${RESTART_MODE}
+    labels:
+      - traefik.enable=true
+      - traefik.port=8888
+      - traefik.frontend.rule=Host:webmail.${MAILSERVER_DOMAIN}
+      - traefik.docker.network=traefik-public
+    volumes:
+      - ${VOLUMES_ROOT_PATH}/mail/rainloop:/rainloop/data
+    depends_on:
+      - mailserver
+      - sql
+    networks:
+      - db-net
+      - mail-net
+      - traefik-public
